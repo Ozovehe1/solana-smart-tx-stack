@@ -102,6 +102,12 @@ export interface LeaderWindow {
 /** A single tracked bundle (one sibling within a set). */
 export interface BundleRecord {
   bundleId: string;
+  /**
+   * Base58 signature(s) of the bundle's transaction(s). Used to correlate streamed
+   * Yellowstone transaction updates back to this bundle so landing is confirmed from the
+   * STREAM, not by polling (Spec §1.1/§8).
+   */
+  signatures: string[];
   /** The set this bundle belongs to (siblings share a setId). Spec §3.3. */
   setId: string;
   /** Slot at which we transmitted (our `Submitted` bookkeeping). */

@@ -40,6 +40,13 @@ function confirmationToStage(status: string): LifecycleStage {
   }
 }
 
+/** Spacing between submissions in a batch run (~5 slots) so they target distinct windows. */
+const SUBMIT_SPACING_MS = 2000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const rpc = new Connection(cfg.SOLANA_RPC_URL, "confirmed");
@@ -59,12 +66,16 @@ async function main(): Promise<void> {
 
   let leaderLookahead: LeaderWindow[] = [];
 
+  // Correlates streamed transaction signatures back to the bundle that owns them, so
+  // landing is confirmed from the STREAM (Spec §1.1/§8). Populated on every submit.
+  const sigIndex = new Map<string, string>();
+
   const tracker = new LifecycleTracker({
     graceSlots: cfg.SILENCE_GRACE_SLOTS,
-    // §2.6 direct status query: ask Jito whether a still-`Submitted` bundle actually
-    // landed. Returns its real stage if so, or null if it genuinely never landed (the
-    // watchdog then synthesizes `bundle_skipped`). This is what resolves bundles when no
-    // streamed stage event arrives — see the onUpdate note below.
+    // FALLBACK ONLY (Spec §2.6): the stream (onTransactionStatus below) is the primary,
+    // mandated way landing is confirmed. This single direct query fires only from the
+    // silence watchdog, for a still-`Submitted` bundle past its deadline, to disambiguate
+    // "stream missed it" vs "genuinely never landed" — never as the primary mechanism.
     statusProbe: async (record) => {
       const res = (await jito.getBundleStatuses([record.bundleId])) as {
         value?: Array<{ slot?: number; confirmation_status?: string | null } | null>;
@@ -93,20 +104,32 @@ async function main(): Promise<void> {
       endpoint: cfg.YELLOWSTONE_ENDPOINT,
       token: cfg.YELLOWSTONE_TOKEN,
       rpcUrl: cfg.SOLANA_RPC_URL,
+      payer: payer.publicKey.toBase58(), // subscribe to our own bundles' transactions
     },
     {
       onSlot: (slot) => {
         void tracker.onSlotTick(slot); // drives the silence watchdog (Spec §2.3)
       },
+      // PRIMARY landing confirmation, from the stream (Spec §1.1/§8 — not polling). A
+      // streamed tx update for one of our signatures advances that bundle's lifecycle
+      // stage; a stream-reported tx error becomes an error-borne failure.
+      onTransactionStatus: ({ signature, slot, commitment, err }) => {
+        const bundleId = sigIndex.get(signature);
+        if (!bundleId) return; // not one of our bundles
+        if (err) {
+          tracker.onError(bundleId, err);
+          return;
+        }
+        tracker.onStageEvent({
+          bundleId,
+          stage: confirmationToStage(commitment),
+          slot,
+          timestamp: Date.now(),
+        });
+      },
       onUpdate: () => {
-        // Stage advancement currently flows through the Tracker's statusProbe (the §2.6
-        // direct query fired by the slot watchdog above), which is sufficient to resolve
-        // every bundle and produce the lifecycle log. Wiring streamed tx-status updates
-        // here → tracker.onStageEvent would advance stages from the STREAM (faster; the
-        // "streaming, not polling" optimization). That requires correlating a streamed
-        // signature back to its bundleId — store the signed tx signatures on BundleRecord
-        // in Builder.submit first, then index by signature here. Left for live wiring so
-        // it can be verified against the real Yellowstone tx-status feed.
+        // Non-transaction updates (accounts/blocks/entries). Not needed for the lifecycle
+        // log; the queue/drain path keeps the receive loop non-blocking (Spec §2.7).
       },
       onDegradedModeChange: (degraded) =>
         console.log(`[watcher] degraded_mode=${degraded}`),
@@ -161,13 +184,24 @@ async function main(): Promise<void> {
     if (decision.retry || failure === null) {
       const record = await builder.submit(decision);
       tracker.track(record);
+      // Register signatures so streamed tx updates correlate back to this bundle.
+      for (const sig of record.signatures) sigIndex.set(sig, record.bundleId);
       log.write(buildLogEntry(record, decision.reasoning));
     }
   }
 
-  console.log("[stack] starting Watcher; initial submission follows once streaming…");
+  console.log(
+    `[stack] starting Watcher; submitting ${cfg.SUBMISSION_COUNT} bundle(s) once streaming…`,
+  );
   void watcher.start();
-  await runOnce(null); // initial (non-retry) submission
+  for (let i = 0; i < cfg.SUBMISSION_COUNT; i++) {
+    await runOnce(null); // each pass is one logical (non-retry) submission
+    if (i < cfg.SUBMISSION_COUNT - 1) await sleep(SUBMIT_SPACING_MS);
+  }
+  console.log(
+    `[stack] submitted ${cfg.SUBMISSION_COUNT} bundle(s); Watcher keeps tracking lifecycle ` +
+      "stages to resolution. Stop with Ctrl-C once the log shows all bundles resolved.",
+  );
 }
 
 main().catch((err) => {

@@ -31,6 +31,8 @@ const schema = z.object({
   SILENCE_GRACE_SLOTS: z.coerce.number().int().positive().default(8),
   JITO_REGION: z.string().default("mainnet"),
   LIFECYCLE_LOG_PATH: z.string().default("./logs/lifecycle.jsonl"),
+  /** How many bundles one `npm start` submits — set to ~12 for the §1.3 10-bundle log. */
+  SUBMISSION_COUNT: z.coerce.number().int().positive().default(1),
 });
 
 export type AppConfig = z.infer<typeof schema>;
