@@ -10,6 +10,8 @@
     "build": "tsc --noEmit",
     "start": "tsx src/index.ts",
     "fault-inject": "tsx scripts/faultInject.ts",
+    "check:live": "tsx scripts/checkLive.ts",
+    "agent:evidence": "tsx scripts/agentEvidence.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
