@@ -1,0 +1,22 @@
+# Secrets — never commit (Spec §7.6)
+.env
+.env.*
+!.env.example
+*keypair*.json
+*-keypair.json
+devnet-keypair.json
+mainnet-keypair.json
+
+# Runtime artifacts
+logs/
+*.jsonl
+
+# Build / deps
+node_modules/
+dist/
+
+# Editor / OS
+.DS_Store
+*.log
+.vscode/
+.idea/
