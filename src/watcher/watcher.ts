@@ -18,11 +18,20 @@
  * LIVE-INFRA: requires a real Yellowstone endpoint (Spec §7.5). The ArrivalRateMeter and
  * backoff math are pure and exercised in isolation; the stream behavior is not.
  */
-import Client, {
+import pkg, {
   CommitmentLevel,
   type SubscribeRequest,
 } from "@triton-one/yellowstone-grpc";
 import { Connection } from "@solana/web3.js";
+
+// @triton-one/yellowstone-grpc's CJS/ESM interop wraps the default export an
+// extra level under tsx/Node ESM; unwrap it so `new Client(...)` works.
+type YellowstoneClient = import("@triton-one/yellowstone-grpc").default;
+const Client = ((pkg as unknown as { default?: unknown }).default ?? pkg) as new (
+  endpoint: string,
+  token?: string | undefined,
+  opts?: Record<string, unknown>,
+) => YellowstoneClient;
 
 /**
  * Self-regulation rate meter (Spec §2.7). Rolling event count over a 5s window. Pure —
@@ -79,7 +88,7 @@ export interface WatcherConfig {
 }
 
 export class Watcher {
-  private client?: Client;
+  private client?: YellowstoneClient;
   private lastSeenSlot = 0;
   private degraded = false;
   private readonly meter = new ArrivalRateMeter();
