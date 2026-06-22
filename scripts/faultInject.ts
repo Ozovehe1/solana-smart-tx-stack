@@ -20,8 +20,13 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import { readFileSync } from "node:fs";
+import bs58 from "bs58";
 import { loadConfig } from "../src/config/env.js";
 import { classifyError } from "../src/tracker/failureClassifier.js";
+import { fetchTipFloor } from "../src/builder/jitoClient.js";
+import { LifecycleLogWriter, buildLogEntry } from "../src/tracker/logWriter.js";
+import { createAgent } from "../src/agent/agent.js";
+import type { AgentContext, BundleRecord } from "../src/types.js";
 
 /** A blockhash is valid ~150 blocks (~60-90s). We wait well past that on purpose. */
 const HOLD_MS = 95_000;
@@ -62,6 +67,42 @@ async function main(): Promise<void> {
     if (category !== "expired_blockhash") {
       console.warn(`[fault] WARNING: expected expired_blockhash, got ${category}`);
     }
+
+    // Drive the same failure → Agent → log path the live loop uses, so this produces a
+    // real failure entry (with verbatim agent reasoning) in the lifecycle log — the
+    // mandatory injected case the bounty grades (Spec §1.4, §4.2, §6).
+    const submitSlot = await rpc.getSlot("confirmed");
+    const record: BundleRecord = {
+      bundleId: bs58.encode(tx.signature!), // the (un-landed) tx signature
+      setId: `fault-${submitSlot}`,
+      submitSlot,
+      targetSlots: [],
+      tipLamports: 0,
+      transitions: [],
+      stage: "Submitted",
+      failure: category,
+      superseded: false,
+    };
+
+    let reasoning = "(agent not consulted)";
+    try {
+      const tipFloor = await fetchTipFloor();
+      const ctx: AgentContext = {
+        failure: category,
+        tipFloor,
+        degradedMode: false,
+        currentSlot: submitSlot,
+        leaderLookahead: [],
+      };
+      const decision = await createAgent(cfg.ANTHROPIC_API_KEY).decide(ctx);
+      reasoning = decision.reasoning;
+      console.log(`[fault] agent decision:`, decision);
+    } catch (agentErr) {
+      console.warn(`[fault] agent step skipped: ${(agentErr as Error).message}`);
+    }
+
+    new LifecycleLogWriter(cfg.LIFECYCLE_LOG_PATH).write(buildLogEntry(record, reasoning));
+    console.log(`[fault] wrote failure entry to ${cfg.LIFECYCLE_LOG_PATH}`);
   }
 }
 
