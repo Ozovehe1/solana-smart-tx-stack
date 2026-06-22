@@ -11,6 +11,7 @@ import type { BundleRecord, FailureCategory } from "../src/types.js";
 function bundle(overrides: Partial<BundleRecord> = {}): BundleRecord {
   return {
     bundleId: "b1",
+    signatures: ["b1-sig"],
     setId: "s1",
     submitSlot: 100,
     targetSlots: [105],

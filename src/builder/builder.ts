@@ -84,12 +84,15 @@ export class Builder {
     tx.feePayer = payer.publicKey;
     tx.sign(payer);
 
-    // 3. Serialize + submit as a bundle.
+    // 3. Serialize + submit as a bundle. Capture the tx signature so the Tracker can
+    //    correlate streamed Yellowstone updates back to this bundle (Spec §1.1/§8).
     const serialized = bs58.encode(tx.serialize());
+    const signature = bs58.encode(tx.signature!);
     const bundleId = await jito.sendBundle([serialized]);
 
     return {
       bundleId,
+      signatures: [signature],
       setId,
       submitSlot,
       targetSlots,

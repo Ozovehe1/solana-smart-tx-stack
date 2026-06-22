@@ -72,8 +72,10 @@ async function main(): Promise<void> {
     // real failure entry (with verbatim agent reasoning) in the lifecycle log — the
     // mandatory injected case the bounty grades (Spec §1.4, §4.2, §6).
     const submitSlot = await rpc.getSlot("confirmed");
+    const signature = bs58.encode(tx.signature!); // the (un-landed) tx signature
     const record: BundleRecord = {
-      bundleId: bs58.encode(tx.signature!), // the (un-landed) tx signature
+      bundleId: signature,
+      signatures: [signature],
       setId: `fault-${submitSlot}`,
       submitSlot,
       targetSlots: [],

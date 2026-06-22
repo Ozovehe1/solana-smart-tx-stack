@@ -23,6 +23,8 @@ import pkg, {
   type SubscribeRequest,
 } from "@triton-one/yellowstone-grpc";
 import { Connection } from "@solana/web3.js";
+import bs58 from "bs58";
+import type { Commitment } from "../types.js";
 
 // @triton-one/yellowstone-grpc's CJS/ESM interop wraps the default export an
 // extra level under tsx/Node ESM; unwrap it so `new Client(...)` works.
@@ -70,10 +72,27 @@ export function backoffDelayMs(attempt: number, baseMs = 1000, capMs = 30000): n
   return Math.min(capMs, baseMs * 2 ** attempt);
 }
 
+/**
+ * A streamed transaction update normalized off the Yellowstone feed (Spec §1.1/§8). This
+ * is how landing is confirmed from the STREAM rather than by polling: when a tracked
+ * bundle's transaction shows up here, its lifecycle stage advances.
+ */
+export interface TransactionStatusEvent {
+  /** Base58 transaction signature (matches BundleRecord.signatures). */
+  signature: string;
+  slot: number;
+  /** Commitment this update represents (the stream's subscription level). */
+  commitment: Commitment;
+  /** Tx-level error reported by the stream, if any (→ error-borne failure). */
+  err: unknown;
+}
+
 export interface WatcherEvents {
   /** Live slot tick — drives the Tracker's silence watchdog. */
   onSlot: (slot: number) => void;
-  /** Normalized transaction/account update relevant to a tracked bundle. */
+  /** Streamed tx update for a (possibly tracked) bundle — confirms landing via the stream. */
+  onTransactionStatus: (evt: TransactionStatusEvent) => void;
+  /** Normalized non-tx update (accounts/blocks/etc.) — low-priority queue path. */
   onUpdate: (update: unknown) => void;
   /** Self-regulation outcome changed. */
   onDegradedModeChange: (degraded: boolean) => void;
@@ -85,12 +104,65 @@ export interface WatcherConfig {
   endpoint: string;
   token: string;
   rpcUrl: string;
+  /**
+   * Payer pubkey (base58). When set, the stream subscribes to transactions touching it so
+   * the bundle's own transactions are pushed back for stream-based landing confirmation.
+   */
+  payer?: string;
+}
+
+/**
+ * Extract a normalized TransactionStatusEvent from a raw Yellowstone SubscribeUpdate, or
+ * null if it isn't a transaction/transactionStatus update. Defensive about field shape —
+ * the exact LaserStream payload is confirmed against a live stream; unexpected shapes are
+ * ignored rather than throwing, so the receive path never crashes.
+ */
+export function extractTransactionStatus(
+  data: unknown,
+  commitment: Commitment,
+): TransactionStatusEvent | null {
+  const d = data as {
+    transactionStatus?: {
+      signature?: ArrayLike<number>;
+      slot?: string | number;
+      err?: unknown;
+    };
+    transaction?: {
+      slot?: string | number;
+      transaction?: { signature?: ArrayLike<number> };
+    };
+  };
+
+  let sig: ArrayLike<number> | undefined;
+  let slotRaw: string | number | undefined;
+  let err: unknown = null;
+
+  if (d.transactionStatus?.signature) {
+    sig = d.transactionStatus.signature;
+    slotRaw = d.transactionStatus.slot;
+    err = d.transactionStatus.err ?? null;
+  } else if (d.transaction?.transaction?.signature) {
+    sig = d.transaction.transaction.signature;
+    slotRaw = d.transaction.slot;
+  } else {
+    return null;
+  }
+  if (!sig || slotRaw == null) return null;
+
+  return {
+    signature: bs58.encode(Uint8Array.from(Array.from(sig))),
+    slot: Number(slotRaw),
+    commitment,
+    err,
+  };
 }
 
 export class Watcher {
   private client?: YellowstoneClient;
   private lastSeenSlot = 0;
   private degraded = false;
+  /** Commitment our subscription delivers at — must match the request below. */
+  private readonly streamCommitment: Commitment = "confirmed";
   private readonly meter = new ArrivalRateMeter();
   private readonly rpc: Connection;
   /** Internal queue — receive step is fast/non-blocking; work drains here (Spec §2.7). */
@@ -156,7 +228,20 @@ export class Watcher {
     const request: SubscribeRequest = {
       slots: { incoming: { filterByCommitment: false } },
       accounts: {},
-      transactions: {},
+      // Subscribe to transactions touching the payer so our own bundles' transactions are
+      // pushed back to us — this is what lets landing be confirmed from the STREAM
+      // (Spec §1.1/§8) rather than by polling.
+      transactions: this.cfg.payer
+        ? {
+            tracked: {
+              vote: false,
+              failed: false,
+              accountInclude: [this.cfg.payer],
+              accountExclude: [],
+              accountRequired: [],
+            },
+          }
+        : {},
       transactionsStatus: {},
       blocks: {},
       blocksMeta: {},
@@ -191,7 +276,16 @@ export class Watcher {
       return;
     }
 
-    // Non-slot updates: enqueue for decoupled processing so the read path never stalls.
+    // High-priority: a transaction update for a (possibly tracked) bundle. Confirms landing
+    // from the STREAM (Spec §1.1/§8). Kept on the fast path with full detail even under
+    // degraded mode, per §2.7 (tracked-bundle events are never shed).
+    const txStatus = extractTransactionStatus(data, this.streamCommitment);
+    if (txStatus) {
+      this.handlers.onTransactionStatus(txStatus);
+      return;
+    }
+
+    // Other updates: enqueue for decoupled processing so the read path never stalls.
     this.queue.push(data);
     this.drain();
   }

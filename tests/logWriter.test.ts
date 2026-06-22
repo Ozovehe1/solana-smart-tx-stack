@@ -31,6 +31,7 @@ function recordWithTransitions(): BundleRecord {
   const t3 = makeTransition("Finalized", 1035, 14_800, t2);
   return {
     bundleId: "bundle-xyz",
+    signatures: ["sig-xyz"],
     setId: "set-1",
     submitSlot: 1000,
     targetSlots: [1001, 1002],

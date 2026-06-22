@@ -11,6 +11,7 @@ import type { BundleRecord, SiblingSet } from "../src/types.js";
 function sibling(id: string, targetSlot: number): BundleRecord {
   return {
     bundleId: id,
+    signatures: [`${id}-sig`],
     setId: "race-1",
     submitSlot: 200,
     targetSlots: [targetSlot],
