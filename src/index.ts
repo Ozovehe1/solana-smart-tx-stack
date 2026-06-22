@@ -21,11 +21,23 @@ import { LifecycleLogWriter, buildLogEntry } from "./tracker/logWriter.js";
 import { JitoClient, fetchTipFloor } from "./builder/jitoClient.js";
 import { Builder } from "./builder/builder.js";
 import { createAgent, Agent } from "./agent/agent.js";
-import type { AgentContext, LeaderWindow } from "./types.js";
+import type { AgentContext, LeaderWindow, LifecycleStage } from "./types.js";
 
 function loadKeypair(path: string): Keypair {
   const secret = JSON.parse(readFileSync(path, "utf8")) as number[];
   return Keypair.fromSecretKey(Uint8Array.from(secret));
+}
+
+/** Map Jito's getBundleStatuses `confirmation_status` → our LifecycleStage. */
+function confirmationToStage(status: string): LifecycleStage {
+  switch (status) {
+    case "finalized":
+      return "Finalized";
+    case "confirmed":
+      return "Confirmed";
+    default:
+      return "Processed"; // "processed" — landed but not yet vote-confirmed
+  }
 }
 
 async function main(): Promise<void> {
@@ -37,15 +49,33 @@ async function main(): Promise<void> {
   const payer = loadKeypair(cfg.MAINNET_KEYPAIR_PATH);
 
   // The set of Jito-enabled validator identities. Real source: Jito's published running
-  // validator set; injected here so the lookahead stays testable (Spec §2.2).
+  // validator set; injected here so the lookahead stays testable (Spec §2.2). Until that
+  // allowlist is wired, an empty set means "treat all upcoming leaders as targetable": on
+  // mainnet the supermajority run jito-solana, and a bundle routed to a non-Jito leader
+  // simply never lands — which the Tracker's silence watchdog already catches (Spec §2.3).
   const jitoEnabledValidators = new Set<string>();
-  const isJitoEnabled = (leader: string) => jitoEnabledValidators.has(leader);
+  const isJitoEnabled = (leader: string) =>
+    jitoEnabledValidators.size === 0 || jitoEnabledValidators.has(leader);
 
   let leaderLookahead: LeaderWindow[] = [];
 
   const tracker = new LifecycleTracker({
     graceSlots: cfg.SILENCE_GRACE_SLOTS,
-    statusProbe: async () => null, // wired to jito.getBundleStatuses in live runs
+    // §2.6 direct status query: ask Jito whether a still-`Submitted` bundle actually
+    // landed. Returns its real stage if so, or null if it genuinely never landed (the
+    // watchdog then synthesizes `bundle_skipped`). This is what resolves bundles when no
+    // streamed stage event arrives — see the onUpdate note below.
+    statusProbe: async (record) => {
+      const res = (await jito.getBundleStatuses([record.bundleId])) as {
+        value?: Array<{ slot?: number; confirmation_status?: string | null } | null>;
+      };
+      const row = res?.value?.[0];
+      if (!row || row.confirmation_status == null) return null; // never landed
+      return {
+        stage: confirmationToStage(row.confirmation_status),
+        slot: row.slot ?? record.submitSlot,
+      };
+    },
     onLanded: (record, set) => {
       log.write(buildLogEntry(record));
       console.log(`[tracker] set ${set.setId} landed via ${record.bundleId}`);
@@ -69,7 +99,14 @@ async function main(): Promise<void> {
         void tracker.onSlotTick(slot); // drives the silence watchdog (Spec §2.3)
       },
       onUpdate: () => {
-        /* transaction/account updates → tracker.onStageEvent in live runs */
+        // Stage advancement currently flows through the Tracker's statusProbe (the §2.6
+        // direct query fired by the slot watchdog above), which is sufficient to resolve
+        // every bundle and produce the lifecycle log. Wiring streamed tx-status updates
+        // here → tracker.onStageEvent would advance stages from the STREAM (faster; the
+        // "streaming, not polling" optimization). That requires correlating a streamed
+        // signature back to its bundleId — store the signed tx signatures on BundleRecord
+        // in Builder.submit first, then index by signature here. Left for live wiring so
+        // it can be verified against the real Yellowstone tx-status feed.
       },
       onDegradedModeChange: (degraded) =>
         console.log(`[watcher] degraded_mode=${degraded}`),
