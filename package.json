@@ -12,6 +12,7 @@
     "fault-inject": "tsx scripts/faultInject.ts",
     "check:live": "tsx scripts/checkLive.ts",
     "check:jito-devnet": "tsx scripts/checkJitoDevnet.ts",
+    "check:testnet-bundle": "tsx scripts/checkTestnetBundle.ts",
     "agent:evidence": "tsx scripts/agentEvidence.ts",
     "test": "vitest run",
     "test:watch": "vitest"
