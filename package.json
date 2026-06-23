@@ -14,6 +14,7 @@
     "check:jito-devnet": "tsx scripts/checkJitoDevnet.ts",
     "check:testnet-bundle": "tsx scripts/checkTestnetBundle.ts",
     "agent:evidence": "tsx scripts/agentEvidence.ts",
+    "agent:diff": "tsx scripts/agentDifferentiation.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -40,7 +40,11 @@ export function buildLogEntry(
     tipLamports: record.tipLamports,
     failure: record.failure,
     superseded: record.superseded,
-    ...(agentReasoning ? { agentReasoning } : {}),
+    // Reasoning travels on the record (Spec §1.4/§6), so landed/failed entries carry it
+    // too — not only the submit-time entry. An explicit arg still overrides if given.
+    ...((agentReasoning ?? record.agentReasoning)
+      ? { agentReasoning: agentReasoning ?? record.agentReasoning }
+      : {}),
     loggedAt: Date.now(),
   };
 }

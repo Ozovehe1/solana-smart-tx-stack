@@ -125,6 +125,12 @@ export interface BundleRecord {
   failure: FailureCategory | null;
   /** Set if this sibling was resolved-as-superseded because a sibling landed first. */
   superseded: boolean;
+  /**
+   * Verbatim Agent reasoning that drove this submission (Spec §1.4/§6). Stored on the
+   * record so EVERY log entry for the bundle — submit, landed, and failed — carries it,
+   * not just the submit-time entry.
+   */
+  agentReasoning?: string;
 }
 
 /**

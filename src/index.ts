@@ -159,10 +159,25 @@ async function main(): Promise<void> {
     try {
       decision = await agent.decide(ctx); // the real decision (Spec §6)
     } catch (err) {
-      console.error(`[agent] API failed (${(err as Error).message}); using fallback`);
+      console.error(
+        "[agent] AGENT CALL FAILED — USING DETERMINISTIC FALLBACK (not a model decision):",
+        (err as Error).message,
+      );
       decision = Agent.deterministicFallback(ctx, tipFloor);
     }
     console.log(`[agent] decision:`, decision);
+
+    // B4 (Spec §3.3/§8): parallel siblings are only safe with the on-chain guard, which is
+    // deferred (Phase 4). Until it exists we NEVER emit more than one un-guarded sibling.
+    // The Agent may still suggest parallelTargets (kept in its logged reasoning); execution
+    // is hard-capped here.
+    const SAFE_PARALLEL_TARGETS = 1;
+    if (decision.parallelTargets > SAFE_PARALLEL_TARGETS) {
+      console.warn(
+        `[builder] Agent requested ${decision.parallelTargets} parallel targets; capped to ` +
+          `${SAFE_PARALLEL_TARGETS} — parallel siblings require the deferred on-chain guard (§3.3/§8).`,
+      );
+    }
 
     const targets = leaderLookahead.filter((w) => w.jitoEnabled).map((w) => w.slot);
     const builder = new Builder({
@@ -177,16 +192,17 @@ async function main(): Promise<void> {
         return tx;
       },
       setId: `set-${currentSlot}`,
-      targetSlots: targets.slice(0, decision.parallelTargets),
+      targetSlots: targets.slice(0, SAFE_PARALLEL_TARGETS),
       submitSlot: currentSlot,
     });
 
     if (decision.retry || failure === null) {
       const record = await builder.submit(decision);
+      record.agentReasoning = decision.reasoning; // persist verbatim reasoning on the bundle
       tracker.track(record);
       // Register signatures so streamed tx updates correlate back to this bundle.
       for (const sig of record.signatures) sigIndex.set(sig, record.bundleId);
-      log.write(buildLogEntry(record, decision.reasoning));
+      log.write(buildLogEntry(record));
     }
   }
 
