@@ -75,6 +75,14 @@ describe("lifecycle log writer (Spec §1.3)", () => {
     expect(entry.agentReasoning).toBe("because the network was calm");
   });
 
+  it("carries reasoning stored on the record into resolution entries (A4)", () => {
+    // No explicit arg — mirrors onLanded/onFailure calling buildLogEntry(record). The
+    // reasoning must still appear, sourced from record.agentReasoning.
+    const record = { ...recordWithTransitions(), agentReasoning: "bid p95: network stressed" };
+    const entry = buildLogEntry(record);
+    expect(entry.agentReasoning).toBe("bid p95: network stressed");
+  });
+
   it("writes durable JSONL and reads it back queryable", () => {
     const path = join(dir, "lifecycle.jsonl");
     const writer = new LifecycleLogWriter(path);

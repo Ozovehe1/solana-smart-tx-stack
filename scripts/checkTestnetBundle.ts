@@ -24,7 +24,8 @@ import {
 } from "@solana/web3.js";
 import { readFileSync } from "node:fs";
 import bs58 from "bs58";
-import { JitoClient } from "../src/builder/jitoClient.js";
+import { JitoClient, fetchTipFloor } from "../src/builder/jitoClient.js";
+import { calculateTip } from "../src/builder/tipCalculator.js";
 
 const RPC = process.env.TESTNET_RPC_URL ?? "https://api.testnet.solana.com";
 const ENGINE =
@@ -56,11 +57,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Build a real bundle: a 1-lamport self-transfer + a dynamic-floor tip to a Jito tip
-  // account (tip is required for a bundle; 1000 lamports is the documented floor — fine
-  // for a liveness probe, not a hardcoded value in the real path).
+  // Build a real bundle: a 1-lamport self-transfer + a tip to a Jito tip account. The tip
+  // is DERIVED FROM LIVE tip-floor data (same path as production, Spec §1.1/§8) — never a
+  // hardcoded number, even in a probe.
   const tipAccounts = await jito.getTipAccounts();
   const tipAccount = new PublicKey(JitoClient.pickTipAccount(tipAccounts));
+  const { tipLamports, rationale } = calculateTip(await fetchTipFloor(), {
+    degradedMode: false,
+  });
+  console.log(`tip (live-derived): ${tipLamports} lamports — ${rationale}`);
   const { blockhash, lastValidBlockHeight } =
     await rpc.getLatestBlockhash("confirmed");
 
@@ -76,7 +81,7 @@ async function main(): Promise<void> {
     SystemProgram.transfer({
       fromPubkey: payer.publicKey,
       toPubkey: tipAccount,
-      lamports: 1000,
+      lamports: tipLamports,
     }),
   );
   tx.recentBlockhash = blockhash;
